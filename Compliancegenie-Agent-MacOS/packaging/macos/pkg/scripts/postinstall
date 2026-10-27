@@ -1,0 +1,251 @@
+#!/bin/bash
+# ComplianceGenie Agent — postinstall (runs as root after files are copied).
+#
+# 1. Upgrade/reinstall on an already-enrolled Mac  -> keep config, restart agent.
+# 2. Token pre-placed by an admin/MDM (silent)     -> enroll with it, no prompt.
+# 3. Normal double-click install                   -> ask the user to paste the
+#    enrollment token in a dialog, start the agent, and confirm the portal
+#    accepted it. A rejected/expired token is asked for again.
+#
+# Everything this script prints ends up in /var/log/install.log.
+
+set -u
+
+LABEL="com.compliancegenie.agent"
+INSTALL_DIR="/usr/local/compliancegenie"
+CONFIG="${INSTALL_DIR}/config.json"
+TEMPLATE="${INSTALL_DIR}/config.template.json"
+PLIST="/Library/LaunchDaemons/${LABEL}.plist"
+ERRLOG="/var/log/compliancegenie-agent.err"
+UNINSTALLER_APP="/Applications/Uninstall ComplianceGenie Agent.app"
+
+# Silent / MDM installs: put the token in one of these files before running
+# `sudo installer -pkg ... -target /`. The file is deleted after use.
+PRESEED_FILES=(
+  "/Library/Application Support/ComplianceGenie/enrollment_token"
+  "/private/tmp/compliancegenie_enrollment_token"
+)
+
+WAIT_SECONDS=60      # how long to wait for the portal to confirm enrollment
+MAX_ATTEMPTS=3       # token prompts before giving up
+TITLE="ComplianceGenie Agent"
+
+log() { echo "[compliancegenie postinstall] $*" >&2; }
+
+# ---------------------------------------------------------------- JSON helper
+# macOS no longer ships a usable python3 (it pops an "install developer tools"
+# dialog), so config.json is edited with JavaScript for Automation instead.
+TMPD="$(mktemp -d /private/tmp/cgpkg.XXXXXX)"
+JSON_JS="${TMPD}/cgjson.js"
+cat > "$JSON_JS" <<'JS'
+ObjC.import('Foundation');
+function readCfg(p) {
+  var s = $.NSString.stringWithContentsOfFileEncodingError(p, $.NSUTF8StringEncoding, null);
+  if (s.isNil()) return null;
+  try { return JSON.parse(s.js); } catch (e) { return null; }
+}
+function run(argv) {
+  var mode = argv[0], path = argv[1], cfg = readCfg(path);
+  if (mode === 'get') {
+    if (!cfg) return '';
+    var v = cfg[argv[2]];
+    return (v === undefined || v === null) ? '' : String(v);
+  }
+  if (mode === 'set') {
+    if (!cfg) throw new Error('cannot parse ' + path);
+    for (var i = 2; i + 1 < argv.length; i += 2) cfg[argv[i]] = argv[i + 1];
+    var out = $(JSON.stringify(cfg, null, 2) + '\n');
+    if (!out.writeToFileAtomicallyEncodingError(path, true, $.NSUTF8StringEncoding, null))
+      throw new Error('cannot write ' + path);
+    return 'ok';
+  }
+  throw new Error('bad mode');
+}
+JS
+trap 'rm -rf "$TMPD"' EXIT
+
+cfg_get() { /usr/bin/osascript -l JavaScript "$JSON_JS" get "$CONFIG" "$1" 2>/dev/null; }
+cfg_set() { /usr/bin/osascript -l JavaScript "$JSON_JS" set "$CONFIG" "$@" >/dev/null; }
+is_enrolled() { [[ -n "$(cfg_get device_id)" && -n "$(cfg_get access_token)" ]]; }
+
+# --------------------------------------------------------------- launchd
+stop_agent() {
+  /bin/launchctl bootout "system/${LABEL}" 2>/dev/null \
+    || /bin/launchctl unload "$PLIST" 2>/dev/null || true
+  # bootout is asynchronous; wait until launchd has really let go.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    /bin/launchctl print "system/${LABEL}" >/dev/null 2>&1 || return 0
+    sleep 0.5
+  done
+}
+
+start_agent() {
+  stop_agent
+  for _ in 1 2 3; do
+    /bin/launchctl bootstrap system "$PLIST" 2>/dev/null && return 0
+    sleep 1
+  done
+  /bin/launchctl load -w "$PLIST" >&2   # legacy fallback
+}
+
+# --------------------------------------------------------------- dialogs
+CONSOLE_USER="$(/usr/bin/stat -f%Su /dev/console 2>/dev/null)"
+case "$CONSOLE_USER" in
+  ""|root|loginwindow|_mbsetupuser) HAVE_GUI=0 ;;
+  *) HAVE_GUI=1; CONSOLE_UID="$(/usr/bin/id -u "$CONSOLE_USER")" ;;
+esac
+
+as_user() { /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" "$@"; }
+
+# prompt_token "message"  -> prints the token; exit status 1 if user cancelled
+prompt_token() {
+  as_user /usr/bin/osascript \
+    -e 'on run argv' \
+    -e 'activate' \
+    -e 'set r to display dialog (item 1 of argv) default answer "" with title (item 2 of argv) buttons {"Cancel", "Continue"} default button "Continue" cancel button "Cancel" with icon note' \
+    -e 'return text returned of r' \
+    -e 'end run' \
+    "$1" "$TITLE" 2>/dev/null
+}
+
+# notify "message" "icon" -> shows an OK dialog
+notify() {
+  [[ $HAVE_GUI -eq 1 ]] || return 0
+  as_user /usr/bin/osascript \
+    -e 'on run argv' \
+    -e 'activate' \
+    -e 'display dialog (item 1 of argv) with title (item 2 of argv) buttons {"OK"} default button "OK" with icon (item 3 of argv)' \
+    -e 'end run' \
+    "$1" "$TITLE" "${2:-note}" >/dev/null 2>&1 || true
+}
+
+# --------------------------------------------------------------- helpers
+trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
+
+errlog_size() { /usr/bin/stat -f%z "$ERRLOG" 2>/dev/null || echo 0; }
+
+# wait_for_enrollment <errlog offset>  -> prints ok | rejected | network | timeout
+wait_for_enrollment() {
+  local offset="$1" waited=0 newlog=""
+  while (( waited < WAIT_SECONDS )); do
+    if is_enrolled; then echo ok; return; fi
+    newlog="$(tail -c +"$((offset + 1))" "$ERRLOG" 2>/dev/null)"
+    if grep -qE "Registration rejected|No enrollment_token" <<<"$newlog"; then
+      log "agent says: $(grep -E 'Registration rejected|No enrollment_token' <<<"$newlog" | tail -1)"
+      echo rejected; return
+    fi
+    sleep 2; waited=$((waited + 2))
+  done
+  if grep -qE "Registration request failed|failed:" <<<"$newlog"; then
+    log "agent says: $(grep -E 'failed' <<<"$newlog" | tail -1)"
+    echo network
+  else
+    echo timeout
+  fi
+}
+
+# Undo the install so a cancelled/failed run leaves nothing behind.
+rollback() {
+  log "rolling back"
+  stop_agent
+  rm -f "$PLIST"
+  rm -rf "$INSTALL_DIR" "$UNINSTALLER_APP"
+}
+
+# enroll_with <token>  -> prints ok | rejected | network | timeout
+enroll_with() {
+  cfg_set enrollment_token "$1" || { echo rejected; return; }
+  chmod 0600 "$CONFIG"
+  local offset; offset="$(errlog_size)"
+  start_agent
+  wait_for_enrollment "$offset"
+}
+
+# =============================================================== main
+chown -R root:wheel "$INSTALL_DIR"
+chmod 0755 "$INSTALL_DIR" "${INSTALL_DIR}/compliancegenie-agent"
+chown root:wheel "$PLIST"; chmod 0644 "$PLIST"
+
+# 1) Already enrolled -> this is an upgrade. Keep identity, restart.
+if [[ -f "$CONFIG" ]] && is_enrolled; then
+  log "existing enrollment found (device $(cfg_get device_id)); upgrading in place"
+  chmod 0600 "$CONFIG"
+  start_agent
+  exit 0
+fi
+
+# Fresh config from the template shipped in the package.
+cp -f "$TEMPLATE" "$CONFIG"
+chmod 0600 "$CONFIG"
+
+# 2) Pre-placed token (silent / MDM install).
+TOKEN=""
+for f in "${PRESEED_FILES[@]}"; do
+  if [[ -s "$f" ]]; then TOKEN="$(trim "$(cat "$f")")"; log "using pre-placed token from $f"; break; fi
+done
+for f in "${PRESEED_FILES[@]}"; do rm -f "$f"; done
+
+if [[ -n "$TOKEN" ]]; then
+  result="$(enroll_with "$TOKEN")"
+  log "enrollment result: $result"
+  case "$result" in
+    ok)       exit 0 ;;
+    rejected) rollback; exit 1 ;;
+    *)        log "server not confirmed yet; the agent keeps retrying in the background"; exit 0 ;;
+  esac
+fi
+
+# 3) Interactive install: ask for the token.
+if [[ $HAVE_GUI -ne 1 ]]; then
+  log "no enrollment token supplied and nobody logged in to ask. Place the token in '${PRESEED_FILES[0]}' and re-run."
+  rollback; exit 1
+fi
+
+MSG="Paste your enrollment token below.
+
+You can copy it from the ComplianceGenie portal, on the page where you downloaded this installer."
+
+attempt=0
+while (( attempt < MAX_ATTEMPTS )); do
+  attempt=$((attempt + 1))
+
+  if ! RAW="$(prompt_token "$MSG")"; then
+    log "user cancelled at token prompt"
+    rollback
+    notify "Installation was cancelled. Nothing was installed.
+
+Run the installer again when you have your enrollment token." "caution"
+    exit 1
+  fi
+  TOKEN="$(trim "$RAW")"
+
+  if [[ -z "$TOKEN" ]]; then
+    MSG="The token box was empty. Paste the enrollment token you copied from the ComplianceGenie portal."
+    continue
+  fi
+
+  result="$(enroll_with "$TOKEN")"
+  log "attempt $attempt enrollment result: $result"
+
+  case "$result" in
+    ok)
+      exit 0 ;;
+    rejected)
+      stop_agent
+      cfg_set enrollment_token ""
+      MSG="That token was not accepted.
+
+It may have expired (tokens are valid for 7 days) or been copied only partly. Copy a fresh token from the ComplianceGenie portal and paste it here." ;;
+    network|timeout)
+      notify "The agent is installed, but it could not reach the ComplianceGenie server yet.
+
+It will keep trying in the background. Check that this Mac is connected to the internet. No further action is needed once it connects." "caution"
+      exit 0 ;;
+  esac
+done
+
+rollback
+notify "The token was not accepted after $MAX_ATTEMPTS tries, so nothing was installed.
+
+Please generate a new token in the ComplianceGenie portal (or contact your administrator) and run the installer again." "stop"
+exit 1

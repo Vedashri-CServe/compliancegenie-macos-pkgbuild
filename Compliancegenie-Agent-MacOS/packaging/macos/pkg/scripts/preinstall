@@ -1,0 +1,17 @@
+#!/bin/bash
+# ComplianceGenie Agent — preinstall (runs as root before files are copied).
+# Stops any running copy so the binary can be replaced cleanly on upgrade.
+
+LABEL="com.compliancegenie.agent"
+PLIST="/Library/LaunchDaemons/${LABEL}.plist"
+
+echo "[compliancegenie preinstall] stopping existing agent (if any)"
+/bin/launchctl bootout "system/${LABEL}" 2>/dev/null \
+  || /bin/launchctl unload "$PLIST" 2>/dev/null \
+  || true
+
+# A machine that was "disabled" with the old manual steps has a .disabled
+# plist lying around; the fresh install re-enables the agent, so drop it.
+rm -f "${PLIST}.disabled"
+
+exit 0

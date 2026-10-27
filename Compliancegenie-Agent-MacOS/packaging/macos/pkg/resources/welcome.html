@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 13px -apple-system, "Helvetica Neue", sans-serif; line-height: 1.5; margin: 0 4px; }
+  h2 { font-size: 17px; margin: 0 0 10px; }
+  .box { border: 1px solid rgba(127,127,127,.35); border-radius: 8px; padding: 10px 14px; margin: 12px 0; }
+  .box b { display: block; margin-bottom: 2px; }
+  ul { margin: 4px 0; padding-left: 18px; }
+  .muted { opacity: .7; font-size: 12px; }
+</style>
+</head>
+<body>
+<h2>Welcome to the ComplianceGenie Agent installer</h2>
+<p>This installs a small background service that checks this Mac's security settings
+(disk encryption, firewall, OS updates, antivirus) and reports them to your
+organisation's ComplianceGenie portal.</p>
+
+<div class="box">
+  <b>Before you start</b>
+  Copy your <b>enrollment token</b> from the ComplianceGenie portal.
+  The installer will ask you to paste it near the end. Tokens are valid for 7 days.
+</div>
+
+<div class="box">
+  <b>What the agent does not collect</b>
+  <ul>
+    <li>File contents, documents, or emails</li>
+    <li>Browsing history, keystrokes, or messages</li>
+  </ul>
+  It reads only security-related system settings.
+</div>
+
+<p class="muted">You'll be asked for your Mac password to allow the installation. That's normal.</p>
+</body>
+</html>

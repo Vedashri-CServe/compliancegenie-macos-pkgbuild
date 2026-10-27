@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LaunchDaemon for the ComplianceGenie agent.
+  Installed to /Library/LaunchDaemons/ so it runs at boot as root,
+  before/independent of any user login.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.compliancegenie.agent</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/compliancegenie/compliancegenie-agent</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>AGENT_CONFIG</key>
+        <string>/usr/local/compliancegenie/config.json</string>
+    </dict>
+
+    <!-- Start at load and keep alive (restart if it exits). -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/compliancegenie-agent.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/compliancegenie-agent.err</string>
+</dict>
+</plist>

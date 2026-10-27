@@ -1,0 +1,30 @@
+{
+  "server_url": "https://portal.compliancegenie.cloudservesystems.com",
+  "enrollment_token": "",
+  "device_id": "",
+  "access_token": "",
+  "refresh_token": "",
+
+  "intervals": {
+    "heartbeat_seconds": 1800,
+    "full_scan_seconds": 86400
+  },
+
+  "collectors": {
+    "device_info": true,
+    "security": true,
+    "patching": true,
+    "encryption": true,
+    "edr_av": true,
+    "software": false
+  },
+
+  "privacy": {
+    "collect_installed_software": false,
+    "collect_browser_extensions": false,
+    "note": "This agent reads only security-relevant system configuration. It never reads file contents, documents, emails, browsing history, keystrokes, or personal communications. Software inventory is OFF by default and only lists application names/versions when explicitly enabled."
+  },
+
+  "verify_tls": true,
+  "log_level": "INFO"
+}

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Template: build-pkg.sh replaces @VERSION@ and @PKG_ID@. -->
+<installer-gui-script minSpecVersion="2">
+    <title>ComplianceGenie Agent</title>
+    <organization>com.cloudservesystems</organization>
+
+    <welcome    file="welcome.html"    mime-type="text/html"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+    <!-- Optional: drop a background.png (620x418) into resources/ and uncomment.
+    <background file="background.png" alignment="bottomleft" scaling="none"/>
+    -->
+
+    <!-- No "Customize" button, native on Intel + Apple silicon (no Rosetta prompt). -->
+    <options customize="never" require-scripts="false" rootVolumeOnly="true"
+             hostArchitectures="x86_64,arm64"/>
+    <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+
+    <volume-check>
+        <allowed-os-versions>
+            <os-version min="12.0"/>
+        </allowed-os-versions>
+    </volume-check>
+
+    <choices-outline>
+        <line choice="default">
+            <line choice="@PKG_ID@"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="@PKG_ID@" visible="false">
+        <pkg-ref id="@PKG_ID@"/>
+    </choice>
+    <pkg-ref id="@PKG_ID@" version="@VERSION@" onConclusion="none">agent-component.pkg</pkg-ref>
+</installer-gui-script>
