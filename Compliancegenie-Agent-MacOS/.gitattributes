@@ -1,0 +1,7 @@
+# Keep macOS scripts with Unix line endings even when edited on Windows
+*.sh                         text eol=lf
+packaging/macos/pkg/**       text eol=lf
+*.plist                      text eol=lf
+*.json                       text eol=lf
+dist/compliancegenie-agent   binary
+dist/oldcompliancegenie-agent binary
